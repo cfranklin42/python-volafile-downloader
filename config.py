@@ -2,6 +2,14 @@
 # Does the downloader start -> True/False (can be overwritten in start command)
 DOWNLOADER = True
 
+USE_JDOWNLOADER_FOLDERWATCH = False
+JDOWNLOADER_FOLDERWATCH = "./folderwatch/"
+
+USE_MYJDOWNLOADER = False
+jdownloader_username = ""
+jdownloader_password = ""
+jdownloader_devicename = ""
+
 # Configure a path on your system to put the downloaded files. The files will get sorted by room and uploader.
 # Make sure this path exists beforehand
 DOWNLOAD_PATH = './downloads/'
@@ -50,8 +58,13 @@ USER_BLACKLIST = []
 # their filename only in the room 'gentoomen' (https://volafile.org/r/gentoomen)
 USE_FILENAME_WHITELIST = False
 FILENAME_WHITELIST = []
-USE_FILENAME_BLACKLIST = False
-FILENAME_BLACKLIST = []
+USE_FILENAME_BLACKLIST = True
+FILENAME_BLACKLIST = [
+"[Request]",
+"[Req]",
+"{REQ}",
+"(REQ)",
+]
 
 # ## FILETYPE FILTERING
 # possible filter options: video, image, other, audio
@@ -72,3 +85,4 @@ HEADERS = {
 COOKIES = {
     "allow-download": "1"
 }
+

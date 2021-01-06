@@ -1,3 +1,4 @@
-requests
-tqdm
-volapi==5.17.0
+requests==2.25.1
+tqdm==4.55.1
+volapi==5.21.0
+myjdapi==1.0.6

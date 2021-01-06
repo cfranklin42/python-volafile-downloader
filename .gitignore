@@ -1,3 +1,16 @@
+# Logs
+logs/*
+!logs/.gitkeep
+
+# Downloads
+downloads/*
+!downloads/.gitkeep
+
+# Folderwatch
+folderwatch/*
+!folderwatch/.gitkeep
+*.crawljob
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
