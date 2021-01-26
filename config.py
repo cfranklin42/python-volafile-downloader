@@ -11,8 +11,8 @@ jdownloader_password = ""
 jdownloader_devicename = ""
 
 # Configure a path on your system to put the downloaded files. The files will get sorted by room and uploader.
-# Make sure this path exists beforehand
-DOWNLOAD_PATH = './downloads/'
+# Options include {ROOM}, {UPLOADER}, {DATE:%Y-%m-%d}
+DOWNLOAD_PATH = './downloads/{ROOM}/{DATE:%Y-%m-%d}'
 
 # When starting the script the whole room gets downloaded -> True/False
 DOWNLOAD_ALL_ON_ROOM_ENTER = True
@@ -59,11 +59,9 @@ USER_BLACKLIST = []
 USE_FILENAME_WHITELIST = False
 FILENAME_WHITELIST = []
 USE_FILENAME_BLACKLIST = True
-FILENAME_BLACKLIST = [
-"[Request]",
-"[Req]",
-"{REQ}",
-"(REQ)",
+FILENAME_BLACKLIST = []
+FILENAME_BLACKLIST_RE = [
+    r"^[\[({]\s*REQ\w*\s*[\]})]",
 ]
 
 # ## FILETYPE FILTERING

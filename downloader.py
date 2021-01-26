@@ -1,39 +1,41 @@
 #!/usr/bin/env python3
-from volapi import Room
 from tqdm import tqdm
 import argparse
 import requests
 import string
 import random
-import config
-from datetime import datetime, timedelta
-from datetime import date
+from datetime import datetime, timedelta, date
 import time
-from jdownloader import JDownloaderCore
-from theme import bcolors, print_file_info, short_time
 from pathlib import Path
+import re
 
-counter = 1
+from jdownloader import JDownloaderCore
+from volapi import Room
+
+import config
+from theme import bcolors, print_file_info, short_time
+import unified_duplicate_checker
 
 class VolaDLException(Exception):
     def __init__(self, kill=False):
         self.kill = kill
 
 class VolaDL(object):
-    def __init__(self, room, password, downloader=None, logger=None, myjdownloader=None, jdownloader=None, subfolder=None):
-        global kill
+    def __init__(self, room, password, downloader=None, logger=None, myjdownloader=None, jdownloader=None, folder=None):
         """Initialize Object"""
+        self.counter = 0
         self.headers = config.HEADERS
         self.cookies = config.COOKIES
+        self.downloader = config.DOWNLOADER
+        self.logger = config.LOGGER
+
+        self.vola_user = config.VOLAFILE_USER or "downloader"
+
         self.room = room
         self.password = password
-        if downloader is None:
-            self.downloader = config.DOWNLOADER
-        else:
+        if downloader is not None:
             self.downloader = downloader
-        if logger is None:
-            self.logger = config.LOGGER
-        else:
+        if logger is not None:
             self.logger = logger
         
         # FolderWatch method takes priority over MyJDownloader
@@ -46,14 +48,14 @@ class VolaDL(object):
             if self.myjdownloader is None:
                 self.myjdownloader = config.USE_MYJDOWNLOADER
 
-        self.subfolder = subfolder or room
-
         self.download_all = config.DOWNLOAD_ALL_ON_ROOM_ENTER
         self.duplicate = not config.ALLOW_DUPLICATES
         self.continue_running = config.CONTINUE_RUNNING
         self.max_file_size = config.MAXIMUM_FILE_SIZE
 
-        self.download_path = Path(config.DOWNLOAD_PATH)
+        self.download_path = config.DOWNLOAD_PATH
+        if folder:
+            self.download_path = folder
         self.log_path = Path(config.LOG_PATH) / self.room
         self.refresh_delta = timedelta(days=1)
         self.start_time = datetime.now()
@@ -66,28 +68,21 @@ class VolaDL(object):
 
         if self.jdownloader or self.myjdownloader:
             self.jdcore = JDownloaderCore(
-                room=room,
-                subfolder=subfolder,
                 folderwatch=self.jdownloader,
-                myjd=self.myjdownloader)
-            # Return value of True means there was an error
-            if self.jdcore.setup():
+                myjd=self.myjdownloader
+            )
+            try:
+                self.jdcore.setup()
+            except:
                 raise VolaDLException(kill=True)
+
+        # Load previously downloaded files so we don't download them again
+        self.jd_logpath = Path(config.LOG_PATH) / ("[" + self.room + "] downloaded.txt")
+        self.jd_downloaded_urls = self.get_logged_urls(self.jd_logpath)
 
         if self.config_check():
             print(bcolors.FAIL+'### YOU CAN NOT USE A BLACKLIST AND A WHITELIST FOR THE SAME FILTER.'+bcolors.ENDC)
             raise VolaDLException(kill=True)
-        
-        self.listen = self.create_room()
-
-    @property
-    def counter(self):
-        global counter
-        return counter
-    @counter.setter
-    def counter(self, i):
-        global counter
-        counter = i
 
     def dl(self, firstStart: bool):
         """Main method that gets called at the start"""
@@ -121,6 +116,8 @@ class VolaDL(object):
         def onmessage(m):
             """React to and log chat messages"""
             self.log_room(m)
+
+        self.listen = self.create_room()
 
         if firstStart:
             print("dl() starting up listeners")
@@ -217,23 +214,69 @@ class VolaDL(object):
         elif download_path.is_file():
             new_name = download_path.stem + "-" + VolaDL.id_generator() + download_path.suffix
             download_path = download_path.with_name(new_name)
-        print(f'[{self.counter}] Downloading to: {download_path}')
         self.counter += 1
+        print(f'[{self.counter}] Downloading to: {download_path}')
         return self.download_file(f.url, download_path)
-        
-    def get_download_folder(self, f):
-        # return self.download_path / f.room.name / f.uploader
-        return self.download_path / datetime.fromtimestamp(f.expire_time - 2*60*60*24).strftime("%Y-%m-%d")
+
+
+    def parse_download_path(self, path: str, f):
+        path = path.replace("{ROOM}", f.room.name)
+        d = 2 # try to adjust expiration date
+        if f.expire_time - 2*60*60*24 > datetime.now().timestamp():
+            d = 4
+
+        dreg = re.compile(r"{DATE:([^}]+)}")
+        while dreg.search(path):
+            m = dreg.search(path)
+            ymd = datetime.fromtimestamp(f.expire_time - d*60*60*24).strftime(m.group(1))
+            path = dreg.sub(ymd, path, count=1)
+        path = path.replace("{UPLOADER}", f.uploader)
+        return Path(path)
+
 
     def single_file_download(self, f, quiet=False) -> bool:
         """Prepares a single file from vola for download"""
-        f.subfolder = self.get_download_folder(f)
+        already_downloaded = f.url in self.jd_downloaded_urls
+        if not quiet or not already_downloaded:
+            print_file_info(f)
+        if not already_downloaded and unified_duplicate_checker.is_duplicate_file(f):
+            print(f'{bcolors.FAIL}  Unified Duplicate Checker: File is a duplicate{bcolors.ENDC}')
+            already_downloaded = True
+        if already_downloaded:
+            return True
+
+        f.subfolder = self.parse_download_path(self.download_path, f)
         if self.myjdownloader or self.jdownloader:
-            return self.jdcore.jdownloader_single_file_download(f, quiet=quiet)
+            ret = self.jdcore.jdownloader_single_file_download(f)
+            if ret:
+                self.counter += 1
+                if self.jdownloader:
+                    print(f'  {bcolors.OKGREEN}[{bcolors.ENDC}{self.counter}{bcolors.OKGREEN}] Sent to Folder Watch{bcolors.ENDC}')
+                elif self.myjdownloader:
+                    print(f'  {bcolors.OKGREEN}[{bcolors.ENDC}{self.counter}{bcolors.OKGREEN}] Sent to My.JDownloader{bcolors.ENDC}')
+                # Add the url to the logged urls file
+                self.log_file(f)
+            return ret
         else:
             print_file_info(f)
             return self.manual_single_file_download(f)
 
+    def log_url(self, url: str) -> None:
+        """Log that a url was downloaded so we don't download it again"""
+        with self.jd_logpath.open("a", encoding="utf-8") as f:
+            f.write(url + '\n')
+
+    def log_file(self, f) -> None:
+        self.jd_downloaded_urls.append(f.url)
+        unified_duplicate_checker.log_file(f.name, f.size, f.checksum)
+        self.log_url(f.url)
+
+    def get_logged_urls(self, path):
+        """Retrieve the room's logged urls so we don't download them again"""
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as f:
+                return list(set(f.read().splitlines()))
+        return []
 
     def config_check(self):
         """Checks filter configs for validity and prepares them for filtering"""
@@ -273,69 +316,58 @@ class VolaDL(object):
 
     def file_check(self, file):
         """Check file against filters"""
+        user_bool = True
+        filename_bool = True
+        filetype_bool = True
+
         if config.USE_USER_BLACKLIST:
-            user_bool = True
             if str(file.uploader) + '#{}'.format(self.room) in self.user_blacklist:
                 user_bool = False
         elif config.USE_USER_WHITELIST:
             user_bool = False
             if str(file.uploader) + '#{}'.format(self.room) in self.user_whitelist:
                 user_bool = True
-        else:
-            user_bool = True
 
         if config.USE_FILENAME_BLACKLIST:
-            filename_bool = True
             for item in self.filename_blacklist:
                 if item.lower().split('#')[0] in str(file.name).lower() and '#{}'.format(self.room) in item:
+                    filename_bool = False
+            for item in config.FILENAME_BLACKLIST_RE:
+                if re.search(item, str(file.name), flags=re.IGNORECASE):
                     filename_bool = False
         elif config.USE_FILENAME_WHITELIST:
             filename_bool = False
             for item in self.filename_whitelist:
                 if item.lower().split('#')[0] in str(file.name).lower() and '#{}'.format(self.room) in item:
                     filename_bool = True
-        else:
-            filename_bool = True
 
         if config.USE_FILETYPE_BLACKLIST:
-            filetype_bool = True
             if str(file.filetype) + '#{}'.format(self.room) in self.filetype_blacklist:
                 filetype_bool = False
         elif config.USE_FILETYPE_WHITELIST:
             filetype_bool = False
             if str(file.filetype) + '#{}'.format(self.room) in self.filetype_whitelist:
                 filetype_bool = True
-        else:
-            filetype_bool = True
 
         return user_bool and filename_bool and filetype_bool
 
+
     def create_room(self):
         """return a volapi room"""
-        if config.VOLAFILE_USER == '':
-            vola_user = 'downloader'
-        else:
-            vola_user = config.VOLAFILE_USER
         if self.password is None:
-            r = Room(name=self.room, user=vola_user)
+            r = Room(name=self.room, user=self.vola_user)
         elif self.password[0:4] == '#key':
-            r = Room(name=self.room, user=vola_user, key=self.password[4:])
+            r = Room(name=self.room, user=self.vola_user, key=self.password[4:])
         else:
-            r = Room(name=self.room, user=vola_user, password=self.password)
-        if config.VOLAFILE_USER_PASSWORD == '':
-            return r
-        else:
-            vola_pass = config.VOLAFILE_USER_PASSWORD
+            r = Room(name=self.room, user=self.vola_user, password=self.password)
+        if config.VOLAFILE_USER_PASSWORD != '':
             time.sleep(1)
             try:
-                r.user.login(vola_pass)
+                r.user.login(config.VOLAFILE_USER_PASSWORD)
                 time.sleep(1)
             except RuntimeError:
                 print(f'{bcolors.FAIL}###{bcolors.ENDC} LOGIN FAILED, PLEASE CHECK YOUR CONFIG BEFORE USING THE BOT')
-                self.alive = False
-                global kill
-                kill = True
-                return r
+                raise VolaDLException(kill=True)
             print('### USER LOGGED IN')
             cookie_jar = r.conn.cookies
             cookies_dict = {}
@@ -343,12 +375,11 @@ class VolaDL(object):
                 if "volafile" in cookie.domain:
                     cookies_dict[cookie.name] = cookie.value
             self.cookies = {**self.cookies, **cookies_dict}
-            return r
+        return r
 
     def close(self):
         """only closes the current session, afterwards the downloader reconnects"""
         print("Closing current instance")
-        self.alive = False
         self.listen.close()
         del self.listen
         return ""
@@ -385,42 +416,41 @@ def parse_args():
     parser.add_argument('--passwd', '-p', type=str,
                         help='Room password to enter the room.')
     parser.add_argument('--downloader', '-d',
-                        action="store_true",
-                        default=None,
+                        action=argparse.BooleanOptionalAction,
                         help='Do you want to download files')
     parser.add_argument('--logger', '-l',
-                        action="store_true",
-                        default=None,
+                        action=argparse.BooleanOptionalAction,
                         help='Do you want to log the room')
     parser.add_argument('--folder', '-f', type=str,
-                        help='Subfolder to place downloads in')
+                        help='Folder to place downloads in')
     parser.add_argument("-myjd", "--myjdownloader",
-                        action="store_true",
-                        default=None,
+                        action=argparse.BooleanOptionalAction,
                         help="Use My.JDownloader to download links.")
     parser.add_argument("-jd", "--jdownloader",
-                        action="store_true",
-                        default=None,
+                        action=argparse.BooleanOptionalAction,
                         help="Use JDownloader Folder Watch to download links.")
+    parser.add_argument("--username", "-u", type=str,
+                        help="Username to use in the room")
     return parser.parse_args()
 
 
-def main_callable(room, passwd=None, downloader=None, logger=None, myjdownloader=False, jdownloader=None, folder=None):
-    """Callable main method with arguments"""
-    lister = [room, passwd, downloader, logger, myjdownloader, jdownloader, folder]
+
+
+if __name__ == "__main__":
+    a = parse_args()
+    lister = [a.room, a.passwd, a.downloader, a.logger, a.myjdownloader, a.jdownloader, a.folder]
     firstStart = True
     while True:
         print(f"{bcolors.OKGREEN}Creating VolaDL object{bcolors.ENDC}")
         try:
             v = VolaDL(*lister)
+
+            if a.username:
+                v.vola_user = a.username
+
             v.dl(firstStart=firstStart)
         except VolaDLException as err:
             if err.kill:
                 break
         firstStart = False
-
-
-if __name__ == "__main__":
-    args = parse_args()
-    main_callable(args.room, args.passwd, args.downloader, args.logger, args.myjdownloader, args.jdownloader, args.folder)
 
